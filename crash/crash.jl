@@ -23,7 +23,10 @@ function json_iteration_state(s::SolverIterationState)
 	       "\"Egas_guess\": $(json_num(s.Egas_guess)), \"EradVec_guess\": $(json_arr(s.EradVec_guess)), " *
 	       "\"Rvec\": $(json_arr(s.Rvec)), \"tau\": $(json_arr(s.tau)), \"delta_x\": $(json_num(s.delta_x)), " *
 	       "\"delta_R\": $(json_arr(s.delta_R)), \"F0\": $(json_num(s.F0)), \"Fg\": $(json_arr(s.Fg)), " *
-	       "\"Fg_abs_sum\": $(json_num(s.Fg_abs_sum)), \"relax\": $(json_num(s.relax))}"
+	       "\"Fg_abs_sum\": $(json_num(s.Fg_abs_sum)), \"Fg_roundoff\": $(json_num(s.Fg_roundoff)), " *
+	       "\"Etot0\": $(json_num(s.Etot0)), \"F0_resid_ratio\": $(json_num(s.F0_resid_ratio)), " *
+	       "\"Fg_resid_ratio\": $(json_num(s.Fg_resid_ratio)), " *
+	       "\"Fg_roundoff_ratio\": $(json_num(s.Fg_roundoff_ratio)), \"relax\": $(json_num(s.relax))}"
 end
 
 function json_opacity_terms(o::OpacityTerms)
