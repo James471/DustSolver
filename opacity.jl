@@ -137,19 +137,21 @@ function ComputeDustTemperatureBateKeto(T_gas, T_d_init, rho, Erad, N_d, dt, R_s
 		return dLHS_dTd
 	end
 
-	# Scale for the convergence test. The residual balances the radiative term against the gas-dust collisional
-	# term, so the scale must contain both: the collisional term vanishes identically when the gas-dust coupling
-	# coefficient N_d is zero, and a scale of zero would make the convergence test unsatisfiable.
+	# Scale for the convergence test, which must be strictly positive and have the units of the residual, i.e.
+	# radiation energy density. The gas-dust collisional term vanishes when the coupling coefficient N_d is zero
+	# and the radiative terms vanish when the opacity is zero, so neither is enough on its own. sum(fourPiBoverC)
+	# is the blackbody energy density at the initial dust temperature; it is positive for any T_d_init > 0 and so
+	# keeps the scale non-zero in every degenerate case.
 	Lambda_compare = N_d * std_sqrt(T_gas) * T_gas
 	if nGroups_ == 1
 		fourPiBoverC = ComputeThermalRadiationSingleGroup(T_d_init)
 		kappaE = ComputeEnergyMeanOpacity(rho, T_d_init)
 		kappaP = ComputePlanckOpacity(rho, T_d_init)
-		Lambda_compare += c_hat_ * dt * rho * (kappaE * Erad[1] + kappaP * fourPiBoverC)
+		Lambda_compare += c_hat_ * dt * rho * (kappaE * Erad[1] + kappaP * fourPiBoverC) + fourPiBoverC
 	else
 		fourPiBoverC = ComputeThermalRadiationMultiGroup(T_d_init, rad_boundaries)
 		opacity_terms = ComputeModelDependentKappaEAndKappaP(T_d_init, rho, rad_boundaries, rad_boundary_ratios, fourPiBoverC, Erad, 0)
-		Lambda_compare += c_hat_ * dt * rho * sum(opacity_terms.kappaE .* Erad .+ opacity_terms.kappaP .* fourPiBoverC)
+		Lambda_compare += c_hat_ * dt * rho * sum(opacity_terms.kappaE .* Erad .+ opacity_terms.kappaP .* fourPiBoverC) + sum(fourPiBoverC)
 	end
 
 	T_d = BackwardEulerOneVariable(rhs, jac, T_d_init, Lambda_compare)

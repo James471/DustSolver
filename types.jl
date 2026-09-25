@@ -57,11 +57,16 @@ mutable struct SolverIterationState
 	F0::Float64			# gas/dust-temperature residual
 	Fg::Vector{Float64}		# per-group residual (g) components, before taking abs and summing
 	Fg_abs_sum::Float64		# sum of |Fg| over groups with tau > 0
+	Fg_roundoff::Float64		# round-off floor on Fg_abs_sum, used in the convergence check (solver.jl)
+	Etot0::Float64			# total energy scale used to non-dimensionalize the convergence check (solver.jl)
+	F0_resid_ratio::Float64	# abs(F0 / Etot0), compared against resid_tol
+	Fg_resid_ratio::Float64	# cscale * Fg_abs_sum / Etot0, compared against resid_tol
+	Fg_roundoff_ratio::Float64	# Fg_abs_sum / Fg_roundoff, compared against newton_resid_roundoff_factor
 	relax::Float64			# damping factor applied to the step (decoupled dust branch only)
 end
 
 SolverIterationState() = SolverIterationState(0, NaN, NaN, NaN, zeros(nGroups_), zeros(nGroups_), zeros(nGroups_),
-					      NaN, zeros(nGroups_), NaN, zeros(nGroups_), NaN, NaN)
+					      NaN, zeros(nGroups_), NaN, zeros(nGroups_), NaN, NaN, NaN, NaN, NaN, NaN)
 
 # A struct to hold the results of the Newton-Raphson iteration for energy update, containing the
 # following elements: Egas, T_gas, T_d, EradVec, work, opacity_terms

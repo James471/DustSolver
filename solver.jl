@@ -133,8 +133,11 @@ function SolveGasDustRadiationEnergyExchange(
 		# n = 0: the initial condition the loop starts from, before any Newton step. Rvec/tau are not yet
 		# defined at this point (the first loop pass computes them from T_d0), and no step or residual
 		# exists yet either, so those fields are left at their SolverIterationState() defaults (0 or NaN).
+		# tau specifically is filled with NaN rather than 0 so it isn't mistaken for an actual zero optical
+		# depth at this point (it has no defined value yet).
 		push!(iterations, SolverIterationState(0, T_gas, T_d0, Egas_guess, copy(EradVec_guess), zeros(nGroups_),
-							zeros(nGroups_), NaN, zeros(nGroups_), NaN, NaN, relax))
+							fill(NaN, nGroups_), NaN, zeros(nGroups_), NaN, zeros(nGroups_), NaN, NaN, Etot0,
+							NaN, NaN, NaN, relax))
 	end
 	n = 0
 	while n < maxIter # NOSONAR
@@ -270,7 +273,7 @@ function SolveGasDustRadiationEnergyExchange(
 			jacobian.J0g = jacobian.J0g .* tau0
 			jacobian.Jgg = jacobian.Jgg .* tau0
 		elseif rebase_thin
-			RebaseThinGroupsOntoErad(jacobian, tau, opacity_terms.kappaPoverE)
+			RebaseThinGroupsOntoErad!(jacobian, tau, opacity_terms.kappaPoverE)
 		end
 
 		# Round-off floor on the radiation residual, as in SolveGasRadiationEnergyExchange: a group whose
@@ -381,8 +384,10 @@ function SolveGasDustRadiationEnergyExchange(
 			end
 		end
 		if debug
-			push!(iterations, SolverIterationState(n, T_gas, T_d, Egas_guess, copy(EradVec_guess), copy(Rvec),
-								copy(tau), delta_x, copy(delta_R), jacobian.F0, jacobian.Fg_abs_sum, relax))
+			push!(iterations, SolverIterationState(n + 1, T_gas, T_d, Egas_guess, copy(EradVec_guess), copy(Rvec),
+								copy(tau), delta_x, copy(delta_R), jacobian.F0, copy(jacobian.Fg),
+								jacobian.Fg_abs_sum, Fg_roundoff, Etot0, abs(jacobian.F0 / Etot0),
+								cscale * jacobian.Fg_abs_sum / Etot0, jacobian.Fg_abs_sum / Fg_roundoff, relax))
 		end
 		n += 1
 		# check relative and absolute convergence of E_r
