@@ -1,17 +1,23 @@
-# A minimal, self-contained reproduction of the Newton-Raphson non-convergence abort
-# (radiation_dust_system.hpp:671) that DTypeFront3D hits on Coarse STEP 1 of DTypeFront3D_crash.toml.
+# A minimal, self-contained reproduction of the dust-temperature abort
+#   "Newton-Raphson iteration for dust temperature failed to converge or dust temperature is negative!"
+# (QuokkaSimulation.hpp, raised when p_iteration_failure_counter[1] > 0) that DTypeFront3D hits on
+# Coarse STEP 70 (t = 9.530016024e+11 s, 3.02% of stop_time) of the 256^3, 8-GPU run of inputs/DTypeFront3D.toml.
 #
-# Every number below is hardcoded, not read from a dump -- unlike tests/repro_DTypeFront3D.jl. They are
-# copied verbatim (full Float64 precision, via Julia's round-tripping repr) from the crashing call's
-# SGIN 15855 record and the SGTRAITS lines in tests/dump.txt, which tests/repro_DTypeFront3D.jl already
-# proved reproduces the abort. This file exists to call the solver with no dump-parsing machinery in the
-# way, for quick edits/experiments against this one failing case.
+# Every number below is hardcoded, copied verbatim (%.17g, round-trips exactly) from the DUSTFAIL debug dump
+# that the instrumented SolveGasDustRadiationEnergyExchange (radiation_dust_system.hpp) prints on failure.
+# The full dump -- 64 failing calls, 8 per MPI rank -- is in crash/dustfail_dump.txt; lines are prefixed with
+# the srun rank label ("r: DUSTFAIL id kind ..."), and a record is identified by (rank, id). This file
+# replays record (rank 0, id 0). All 64 records fail the same way: dust_model == 2 (coeff_n = 0), and the
+# first Newton step drives T_d negative (where = 1, n = 1), with T_gas0 ~ 1e15 K.
+#
+# Q_dust is not an argument of the C++ solver in this quokka tree; passing 0.0 reduces every Julia
+# expression that uses it to the C++ one.
 #
 # Run with:  julia crash.jl
 
 include(joinpath(@__DIR__, "..", "types.jl")) # defines OpacityModel
 
-# --- minimal JSON writer, so the result can be read from temp.ipynb without a Julia kernel. Every value
+# --- minimal JSON writer, so the result can be read from a notebook without a Julia kernel. Every value
 # --- here is a Float64, Int or a flat vector of one of those, so this needs no escaping/nesting logic
 # --- beyond what is written below -- not a general-purpose JSON encoder. -------------------------------
 json_num(x::Float64) = isnan(x) ? "NaN" : isinf(x) ? (x > 0 ? "Infinity" : "-Infinity") : repr(x)
@@ -44,7 +50,7 @@ function json_result(r::NewtonIterationResult)
 end
 
 # =====================================================================================================
-# Traits (SGTRAITS line, DTypeFront3D run) -- Physics_Traits / RadSystem_Traits / ISM_Traits / EOS_Traits
+# Traits -- the DUSTFAIL "traits" line (identical in all 64 records)
 # =====================================================================================================
 
 const nGroups_ = 3
@@ -52,19 +58,23 @@ const nGroupsThermal_ = 2
 const beta_order_ = 1
 const opacity_model_ = OpacityModel(1) # piecewise_constant_opacity
 const gamma_ = 1.6666666666666667
-const c_light_ = 2.99792458e10
-const c_hat_ = 2.99792458e7
-const radiation_constant_ = 7.565733250280009e-15	# a_rad, copied verbatim -- NOT 4 sigma_SB / c (see solver.jl history)
+const c_light_ = 29979245800.0
+const c_hat_ = 29979245.800000001	# c / 1000
+const radiation_constant_ = 7.5657332502800087e-15	# a_rad, copied verbatim -- NOT 4 sigma_SB / c
 const boltzmann_constant_ = 1.3806490000000002e-16
-const energy_unit_ = 6.62607015e-27	# h -- group boundaries below are in Hz
-const Erad_floor_ = 1.246805533225e-21	# already divided by nGroups_, as radiation_system.hpp does
+const energy_unit_ = 1.6021766339999999e-12	# eV in erg -- group boundaries below are in eV
+const Erad_floor_ = 7.2632007407999998e-22	# already divided by nGroups_, as radiation_system.hpp does
 const mean_molecular_mass_ = 1.0
-const gas_dust_coupling_threshold = 1.0e-6
+const gas_dust_coupling_threshold = 9.9999999999999995e-07
+
+# DUSTFAIL "edge" lines: kappa_lower per group (all exponents 0) = [kappa_ir, kappa_optical, 0]
 const kappa_ir_ = 0.01
 const kappa_optical_ = 1000.0
 
-# EOS species table (spmasses / eos_gammas), filled by actual_eos_init from the network's parameters
-const spmasses_ = [9.10938291e-28, 1.673532715291e-24, 1.672621777e-24]
+# EOS species table (spmasses / gammas), filled by actual_eos_init from extern/Microphysics/EOS/photoionization/_parameters,
+# in the network's species order: H, H+, e- (build/3d/src/problems/DTypeFront3D/network_properties.H). Not in the dump;
+# the T_gas0 / c_v0 cross-check below verifies them (they reproduce the dumped values bit-for-bit).
+const spmasses_ = [1.673773e-24, 1.6728620616289998e-24, 9.10938371e-28]
 const gammas_ = [1.6666666666666667, 1.6666666666666667, 1.6666666666666667]
 
 include(joinpath(@__DIR__, "..", "hyperparameters.jl"))
@@ -117,27 +127,67 @@ include(joinpath(@__DIR__, "..", "opacity.jl"))
 include(joinpath(@__DIR__, "..", "jacobian.jl"))
 include(joinpath(@__DIR__, "..", "solver.jl"))
 
+# Distance in units in the last place between two Float64s (0 = bit-identical).
+function ulp_distance(a::Float64, b::Float64)
+	a == b && return 0
+	(isnan(a) || isnan(b)) && return typemax(Int)
+	ia = reinterpret(Int64, a)
+	ib = reinterpret(Int64, b)
+	ia = ia < 0 ? typemin(Int64) - ia : ia
+	ib = ib < 0 ? typemin(Int64) - ib : ib
+	return abs(ia - ib)
+end
+
+function check(name, julia_value, cpp_value)
+	d = ulp_distance(julia_value, cpp_value)
+	println(rpad(name, 24), " julia = ", repr(julia_value), "  C++ = ", repr(cpp_value), "  ULP = ", d)
+	return d
+end
+
 # =====================================================================================================
-# The crashing call: SGIN 15855, cell (15,15,15), outer iter 0
+# The crashing call: DUSTFAIL record (rank 0, id 0), Coarse STEP 70
 # =====================================================================================================
 
 function main()
-	Egas0 = 8.689688612484974e-13
-	rho = 1.6735327152926736e-22
+	# DUSTFAIL "scalars" line
+	Egas0 = 2.7931396745623172
+	rho = 5.7256058727513376e-24
 	coeff_n = 0.0
-	dt = 3.0878236770052437e10
-	Q_dust = 2.6813418069295e-20
+	dt = 10.446078398865433
+	n_outer_iter = 0
 	tol = 1.0e-10
 	tol_rel = -1.0
 	tempFloor = 10.0
-	n_outer_iter = 0
+	Q_dust = 0.0
 
-	Erad0Vec = [6.260021242303187e-17, 3.740416599676655e-21, 3.740416599675e-41]
+	# DUSTFAIL "group" lines, g = 0, 1, 2
+	Erad0Vec = [3.0000434388425533e-10, 3.2864713504122893e-09, 2.8873297972796427e-08]
 	work = [0.0, 0.0, 0.0]
-	vel_times_F = [0.0, 0.0, 0.0]
-	Src = [0.0, 4.259979144172045e-10, 0.0]
-	rad_boundaries = [1.0e8, 1.0e14, 3.29e15, 8.0e15]
-	massScalars = [6.7639341145484424e-37, 1.673532715280247e-22, 1.2419615697312844e-33]
+	vel_times_F = [6.6417262252495831e-14, 6.8923430825582663e-11, 6.0995425657430077e-10]
+	Src = [0.0, 0.0, 0.0]
+
+	# DUSTFAIL "edge" lines (eV) and "massScalar" lines (H, H+, e-)
+	rad_boundaries = [9.9999999999999995e-07, 0.41356700000000002, 13.6, 26.0]
+	massScalars = [1.0094063843583376e-28, 5.7223888691007661e-24, 3.1160630121356934e-27]
+
+	# What the C++ saw when it flagged the failure (DUSTFAIL "state" line)
+	cpp_T_gas0 = 1971365050104450.2
+	cpp_T_d0 = 1971365050104450.2
+	cpp_c_v0 = 1.4168556323012454e-15
+	cpp_T_d_at_failure = -6382108661.5 # Newton iterate n = 1, dust_model = 2
+	cpp_fourPiBoverC_Tgas0 = [84626729463.325348, 3009362029319383.0, 0.0]
+
+	println("--- cross-checks against the C++ dump (EOS, Planck integrals, initial dust temperature) ---")
+	T_gas0 = ComputeTgasFromEint(rho, Egas0, massScalars)
+	check("T_gas0", T_gas0, cpp_T_gas0)
+	check("c_v0", ComputeEintTempDerivative(rho, T_gas0, massScalars), cpp_c_v0)
+	fourPiBoverC = ComputeThermalRadiationMultiGroup(T_gas0, rad_boundaries)
+	for g in 1:nGroups_
+		check("fourPiBoverC_Tgas0[$g]", fourPiBoverC[g], cpp_fourPiBoverC_Tgas0[g])
+	end
+	check("T_d0 (Bate-Keto)", ComputeDustTemperatureBateKeto(T_gas0, T_gas0, rho, Erad0Vec, coeff_n, dt, NaN, 0, Q_dust, rad_boundaries),
+	      cpp_T_d0)
+	println()
 
 	p_iteration_counter = zeros(Int, 4)
 	p_iteration_failure_counter = zeros(Int, 3)
@@ -153,11 +203,14 @@ function main()
 	println("T_gas = $(result.T_gas) K,  T_d = $(result.T_d) K")
 	println("Egas  = $(result.Egas)")
 	println("Erad  = $(result.EradVec)")
+	if length(result.iterations) >= 2
+		check("T_d at n = 1", result.iterations[2].T_d, cpp_T_d_at_failure)
+	end
 	println()
-	if p_iteration_failure_counter[1] > 0
-		println("REPRODUCED: the Newton-Raphson iteration hit maxIter without converging,")
+	if p_iteration_failure_counter[2] > 0
+		println("REPRODUCED: the dust temperature went negative (the C++ dust-temperature abort)")
 	else
-		println("NOT reproduced: the Julia solve converged in $n iterations")
+		println("NOT reproduced: the dust temperature stayed non-negative")
 	end
 
 	dump_path = joinpath(@__DIR__, "result.json")

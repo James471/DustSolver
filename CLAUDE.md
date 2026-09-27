@@ -57,11 +57,17 @@ C++ result to prove or disprove a fix.
   Usage: `julia crosscheck_DTypeFront3D.jl dump.txt [julia_out.txt]`.
 - `tests/dump.txt`, `tests/julia_out.txt` — a captured dump and the crosscheck's output; regenerate
   per the instructions at the top of `crosscheck_DTypeFront3D.jl`, don't hand-edit.
-- `crash/crash.jl` — self-contained reproduction of the same crash with the crashing call's
-  inputs (`SGIN 15855`, cell `(15,15,15)`, outer iter 0) hardcoded verbatim, no dump-parsing
-  machinery. For quick edits/experiments against this one failing case; also writes a JSON dump of
-  the full per-iteration Newton history to `crash/result.json` for inspection outside Julia (e.g.
-  from `crash/temp.ipynb`).
+- `crash/crash.jl` — self-contained replay (verified: reproduces the negative T_d at n = 1) of a *different* crash from the one above: the
+  `Newton-Raphson iteration for dust temperature failed to converge or dust temperature is negative!`
+  abort that the 256^3, 8-GPU `DTypeFront3D` run hits on Coarse STEP 70. Inputs of `DUSTFAIL` record
+  (rank 0, id 0) are hardcoded verbatim, no dump-parsing machinery. Cross-checks the EOS, Planck
+  integrals and initial dust temperature against the dumped C++ values (ULP distance), and writes the
+  per-iteration Newton history to `crash/result.json`.
+- `crash/dustfail_dump.txt` — the raw `DUSTFAIL` dump (64 failing calls, 8 per MPI rank) that
+  `crash.jl` was taken from. Lines are `rank: DUSTFAIL id kind key value ...`; a record is
+  (rank, id). Printed by the debug block in quokka's `SolveGasDustRadiationEnergyExchange`
+  (`radiation_dust_system.hpp`) whenever `T_d0 < 0` (`where 0`) or a Newton iterate `T_d < 0`
+  (`where 1`).
 
 ## How to generate/refresh a dump
 
