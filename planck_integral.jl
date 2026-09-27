@@ -224,3 +224,54 @@ function integrate_planck_from_0_to_x(x)
 	end
 	return y
 end
+
+# Port of the X_TAIL tail series in planck_integral.hpp (quokka-james471; not in the quokka checkout the
+# rest of this file mirrors). Above X_TAIL the table is replaced by an exact series for the upper tail of
+# the Planck integral, for two reasons:
+#   1. A group lying entirely in the Wien tail has an energy fraction Q(x_lo) - Q(x_hi) with Q = 1 - P
+#      << 1. Formed from the table as P(x_hi) - P(x_lo), both operands are ~1, so the fraction carries an
+#      absolute round-off of ~eps -- a relative error of eps / Q, which makes B a staircase in T.
+#   2. Linear interpolation in log x gives B the slope of the bin's chord, while the analytic temperature
+#      derivative uses the exact kernel; in the tail these differ by up to ~10%, so the Newton Jacobian is
+#      inconsistent with the residual it differentiates.
+# X_TAIL sits on a table node (the one nearest x = 5), where the table equals the exact P to its stored
+# precision, so B stays continuous across the switch.
+# 0-based node 739: 10^(LOG_X_MIN + 739 (LOG_X_MAX - LOG_X_MIN) / (INTERP_SIZE - 1)), written out as a
+# literal as the C++ does (std::pow is not constexpr there).
+const X_TAIL = 4.996877453854884
+# Upper bound on the number of series terms; above X_TAIL the series reaches double precision by k = 8.
+const TAIL_SERIES_MAX_TERMS = 20
+
+# Upper tail of the Planck integral, (15/pi^4) \int_x^inf s^3 / (e^s - 1) ds. Expanding
+# 1/(e^s - 1) = sum_k e^(-k s) and integrating each term exactly gives
+#     Q(x) = (15/pi^4) sum_{k>=1} e^(-k x) (x^3/k + 3 x^2/k^2 + 6 x/k^3 + 6/k^4),
+# whose terms fall off like e^(-k x): 8 terms at x = 5, 2 at x = 20 for double precision.
+function integrate_planck_from_x_to_inf_series(x)
+	e = std_exp(-x)
+	ek = e
+	x2 = x * x
+	x3 = x2 * x
+	q = 0.0
+	for k in 1:TAIL_SERIES_MAX_TERMS
+		kf = Float64(k)
+		term = ek * (x3 / kf + 3.0 * x2 / (kf * kf) + 6.0 * x / (kf * kf * kf) + 6.0 / (kf * kf * kf * kf))
+		q += term
+		if term <= 1.0e-17 * q # also stops at once when e^(-x) underflows to 0
+			break
+		end
+		ek *= e
+	end
+	return q / gInf
+end
+
+# Both the lower and upper normalized Planck integrals at x, (P, Q) with P + Q = 1, each computed from
+# whichever representation holds it without cancellation. Below X_TAIL this is the table's P (identical
+# to integrate_planck_from_0_to_x); above it, the tail series' Q.
+function integrate_planck_below_and_above_x(x)
+	if x >= X_TAIL
+		q = integrate_planck_from_x_to_inf_series(x)
+		return 1.0 - q, q
+	end
+	p = integrate_planck_from_0_to_x(x)
+	return p, 1.0 - p
+end

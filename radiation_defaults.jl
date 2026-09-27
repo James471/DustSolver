@@ -27,25 +27,29 @@ function ComputePlanckEnergyFractions(boundaries, temperature)::Vector{Float64}
 		return radEnergyFractions
 	else
 		energy_unit_over_kT = energy_unit_ / (boltzmann_constant_ * temperature)
-		y = NaN
-		previous = 0.0
+		# (P, Q) = lower/upper Planck integrals at the group's lower edge; the first group's lower edge is
+		# taken as x = 0.
+		p_prev = 0.0
+		q_prev = 1.0
+		prev_in_tail = false
 		# Only the thermal groups (the leading nGroupsThermal_ groups) receive blackbody emission. When
 		# chemical bands are present the thermal fractions are NOT renormalized: the blackbody radiation
 		# above the first chemical-band boundary is simply dropped, so the fractions sum to < 1.
 		for g in 1:nGroupsThermal_
+			in_tail = true
 			if g == nGroups_
 				# no chemical bands: the last group carries all remaining blackbody, total fraction = 1.0
-				y = 1.0
+				p, q = 1.0, 0.0
 			else
 				x = boundaries[g + 1] * energy_unit_over_kT
-				if x >= 100.0 # 100. is the upper limit of x in the table
-					y = 1.0
-				else
-					y = integrate_planck_from_0_to_x(x)
-				end
+				in_tail = x >= X_TAIL
+				p, q = integrate_planck_below_and_above_x(x)
 			end
-			radEnergyFractions[g] = y - previous
-			previous = y
+			# See X_TAIL in planck_integral.jl (ported to quokka-james471): a group whose lower edge is in
+			# the Wien tail takes its fraction as a difference of upper integrals, Q(x_lo) - Q(x_hi), not of
+			# lower integrals that are both ~1. Otherwise P(x_hi) - P(x_lo), as before.
+			radEnergyFractions[g] = prev_in_tail ? q_prev - q : p - p_prev
+			p_prev, q_prev, prev_in_tail = p, q, in_tail
 		end
 		# chemical bands (g > nGroupsThermal_) emit no blackbody radiation; left at 0.
 		amrex_assert(sum(radEnergyFractions) < 1.0 + 1.0e-10)
@@ -81,24 +85,36 @@ function ComputeThermalRadiationTempDerivativeMultiGroup(temperature, boundaries
 		#     D(x) = (15/pi^4) \int_0^x s^4 e^s / (e^s - 1)^2 ds = 4 P(x) - (15/pi^4) x^4 / (e^x - 1),
 		# where P is the same normalized Planck integral used for the energy fractions. D(inf) = 4
 		# recovers d(a T^4)/dT.
+		# See X_TAIL in planck_integral.jl (ported to quokka-james471): alongside D(x) this also tracks its complement
+		#     U(x) = 4 - D(x) = 4 Q(x) + (15/pi^4) x^4 / (e^x - 1),
+		# and a group whose lower edge is in the Wien tail takes U(x_lo) - U(x_hi) instead of
+		# D(x_hi) - D(x_lo), mirroring ComputePlanckEnergyFractions. There Q comes from the exact tail
+		# series, so the derivative is that of the B actually emitted, not of the true Planck function
+		# that the table only approximates.
 		energy_unit_over_kT = energy_unit_ / (boltzmann_constant_ * temperature)
-		y = NaN
-		previous = 0.0
+		d_prev = 0.0
+		u_prev = 4.0
+		prev_in_tail = false
 		# Only the thermal groups emit; the chemical bands are left at 0, as in ComputePlanckEnergyFractions.
 		for g in 1:nGroupsThermal_
+			in_tail = true
 			if g == nGroups_
 				# no chemical bands: the last group carries all remaining blackbody, so D = D(inf) = 4
-				y = 4.0
+				d, u = 4.0, 0.0
 			else
 				x = boundaries[g + 1] * energy_unit_over_kT
-				if x >= 100.0 # 100. is the upper limit of x in the table
-					y = 4.0
+				if x >= X_TAIL
+					q = integrate_planck_from_x_to_inf_series(x)
+					kernel = (x * x * x * x / (std_exp(x) - 1.0)) / gInf
+					d, u = 4.0 * (1.0 - q) - kernel, 4.0 * q + kernel
 				else
-					y = 4.0 * integrate_planck_from_0_to_x(x) - (x * x * x * x / (std_exp(x) - 1.0)) / gInf
+					in_tail = false
+					d = 4.0 * integrate_planck_from_0_to_x(x) - (x * x * x * x / (std_exp(x) - 1.0)) / gInf
+					u = 4.0 - d
 				end
 			end
-			d_fourpiboverc_d_t[g] = a_T3 * (y - previous)
-			previous = y
+			d_fourpiboverc_d_t[g] = a_T3 * (prev_in_tail ? u_prev - u : d - d_prev)
+			d_prev, u_prev, prev_in_tail = d, u, in_tail
 		end
 
 		return d_fourpiboverc_d_t

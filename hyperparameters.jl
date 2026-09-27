@@ -18,6 +18,18 @@ const newton_resid_roundoff_factor = 10.0
 const newton_damping_down = 0.5
 const newton_damping_up = 1.5
 const newton_damping_min = 0.05
+# Ported to radiation_system.hpp in quokka-james471 (not in the checkout the rest of this file
+# mirrors). The plain newton_damping_up/down rule above reacts to a single
+# iteration's residual comparison, so it can lock into a stable limit cycle (relax cycling through a
+# fixed sequence of values, e.g. period 3) instead of decaying -- see solver.jl's use of
+# damping_patience/damping_cooldown. Requiring the residual to fail to improve for damping_patience
+# consecutive iterations before cutting relax (instead of on the first failure) makes the cut
+# period-agnostic: a step is only shortened once it's clear recent progress has stalled, not because
+# of a single sample from what may be an oscillating sequence. damping_cooldown then holds relax
+# fixed for a few iterations after a cut so the smaller step has a chance to actually take effect
+# before being judged again.
+const newton_damping_patience = 3
+const newton_damping_cooldown = 2
 const use_D_as_base = false
 # Optical depth below which a group's Newton unknown is its radiation energy Erad_g rather than its
 # exchange term R_g.

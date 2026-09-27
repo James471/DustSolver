@@ -127,7 +127,12 @@ function SolveGasDustRadiationEnergyExchange(
 	relax = 1.0
 	Fg_abs_sum_prev = floatmax(Float64)
 	delta_x_prev = 0.0
-	delta_R_prev = zeros(nGroups_)
+	# Patience/cooldown state (see newton_damping_patience/newton_damping_cooldown in
+	# hyperparameters.jl): worsen_streak counts consecutive non-improving iterations, so a cut only
+	# fires once that streak reaches newton_damping_patience rather than on the first bad iteration;
+	# cooldown_remaining then blocks further cuts or growth for a few iterations after one fires.
+	worsen_streak = 0
+	cooldown_remaining = 0
 	iterations = SolverIterationState[]
 	if debug
 		# n = 0: the initial condition the loop starts from, before any Newton step. Rvec/tau are not yet
@@ -296,6 +301,15 @@ function SolveGasDustRadiationEnergyExchange(
 		# the round-off floor and cannot be reduced any further
 		if (abs(jacobian.F0 / Etot0) < resid_tol) &&
 		   ((cscale * jacobian.Fg_abs_sum / Etot0 < resid_tol) || (jacobian.Fg_abs_sum < newton_resid_roundoff_factor * Fg_roundoff))
+			if debug
+				# Terminal snapshot: the residuals that passed the check, at the state the previous snapshot
+				# already holds. No step is taken, so delta_x/delta_R are NaN. Without this the history ends
+				# one residual short, since each in-loop snapshot is pushed only after a step.
+				push!(iterations, SolverIterationState(n + 1, T_gas, T_d, Egas_guess, copy(EradVec_guess), copy(Rvec),
+									copy(tau), NaN, fill(NaN, nGroups_), jacobian.F0, copy(jacobian.Fg),
+									jacobian.Fg_abs_sum, Fg_roundoff, Etot0, abs(jacobian.F0 / Etot0),
+									cscale * jacobian.Fg_abs_sum / Etot0, jacobian.Fg_abs_sum / Fg_roundoff, relax))
+			end
 			break
 		end
 
@@ -340,23 +354,40 @@ function SolveGasDustRadiationEnergyExchange(
 				# that would ODR-use the namespace-scope constexpr constant, which nvcc does not make
 				# available in device code.
 				damping_min = newton_damping_min
-				relax *= (jacobian.Fg_abs_sum > Fg_abs_sum_prev) ? newton_damping_down : newton_damping_up
+				worsened = jacobian.Fg_abs_sum > Fg_abs_sum_prev
+				worsen_streak = worsened ? worsen_streak + 1 : 0
+				if cooldown_remaining > 0
+					cooldown_remaining -= 1
+				elseif worsen_streak >= newton_damping_patience
+					# Patience-gated cut: a lone bad iteration (which an oscillating -- not diverging --
+					# residual produces regularly) does not by itself shorten the step, only a sustained
+					# run of non-improving iterations does. This is what keeps the cut from firing every
+					# time an n-cycle's residual happens to tick upward, regardless of the cycle's period.
+					relax *= newton_damping_down
+					worsen_streak = 0
+					cooldown_remaining = newton_damping_cooldown
+				elseif !worsened
+					relax *= newton_damping_up
+				end
 				relax = std_min(std_max(relax, damping_min), 1.0)
 			end
 			Fg_abs_sum_prev = jacobian.Fg_abs_sum
 			# Oscillation catch. When the iteration cycles about the root rather than approaching it, the
-			# steps alternate in sign and each one overshoots past the root; the mean of two consecutive
-			# steps is what actually points at it (for a clean period-two cycle the mean lands on it).
-			# Advance by that mean instead of the raw Newton step, and let the usual convergence test
-			# below decide -- this damps the cycle without bypassing the criterion.
+			# steps alternate in sign and each one overshoots past the root. For a clean period-two cycle
+			# x_a <-> x_b the root is the midpoint, which is reached by half of the current step, so take
+			# that instead of the raw Newton step, and let the usual convergence test below decide -- this
+			# damps the cycle without bypassing the criterion.
+			# (Not the mean 0.5 * (delta_x + delta_x_prev), which the quokka checkout this file mirrors still
+			# uses; fixed in quokka-james471. delta_x_prev has already been applied, so the mean re-applies
+			# half of it: a 2-cycle's steps +d, -d average to 0 and the iterate stalls, and an iterate that
+			# merely overshoots slightly is pushed back by half the previous step.)
 			step_x = delta_x
 			step_R = copy(delta_R)
 			if n > 0 && delta_x * delta_x_prev < 0.0
-				step_x = 0.5 * (delta_x + delta_x_prev)
-				step_R = 0.5 * (delta_R .+ delta_R_prev)
+				step_x = 0.5 * delta_x
+				step_R = 0.5 * delta_R
 			end
 			delta_x_prev = delta_x
-			delta_R_prev = copy(delta_R)
 			T_d += relax * step_x
 			for g in 1:nGroups_
 				if rebase_thin && (tau[g] > 0.0) && (tau[g] < newton_erad_base_tau_threshold)
